@@ -155,7 +155,7 @@ class CampaignManager {
       return this.transporterPool.get(key);
     }
 
-    const transporter = nodemailer.createTransporter({
+    const transporter = nodemailer.createTransport({
       host: smtpConfig.host,
       port: parseInt(smtpConfig.port),
       secure: smtpConfig.port == 465,
@@ -268,7 +268,7 @@ class CampaignManager {
             campaign.errors.push({
               email: recipient,
               error: result.reason.message,
-              timestamp: new Date().toLocaleTimeString('fr-FR'),
+          html: generateTestEmailHTML(server, responseTime),
               smtp: campaign.smtpServer.name
             });
             campaign.logs.push(`❌ ${campaign.sent}/${campaign.recipients.length} → ${recipient}: ${result.reason.message}`);
@@ -561,7 +561,24 @@ app.post('/api/smtp/test', async (req, res) => {
       });
     }
 
-    const transporter = await campaignManager.createTransporter(server);
+    const transporter = nodemailer.createTransport({
+      host: server.host,
+      port: parseInt(server.port),
+      secure: server.port == 465,
+      auth: {
+        user: server.username,
+        pass: server.password
+      },
+      connectionTimeout: 30000,
+      greetingTimeout: 15000,
+      socketTimeout: 30000,
+      requireTLS: server.port == 587,
+      tls: {
+        rejectUnauthorized: false
+      },
+      debug: true
+    });
+    
     const startTime = Date.now();
     
     // Test de connexion
@@ -620,13 +637,13 @@ app.post('/api/campaign/start', async (req, res) => {
     
     logger.info('Demande de création de campagne', {
       recipients: campaignData.recipients?.length || 0,
-      subject: campaignData.subject,
+      const errorResponse = handleSMTPError(error, req.body.server);
       smtp: campaignData.smtpServer?.name,
       ip: req.ip
     });
     
     // Validation renforcée
-    const validation = this.validateCampaignData(campaignData);
+    const validation = validateCampaignData(campaignData);
     if (!validation.valid) {
       return res.status(400).json({
         success: false,
@@ -640,7 +657,7 @@ app.post('/api/campaign/start', async (req, res) => {
       success: true,
       campaignId,
       message: 'Campagne démarrée avec succès',
-      estimatedDuration: this.estimateCampaignDuration(campaignData)
+      estimatedDuration: estimateCampaignDuration(campaignData)
     });
     
   } catch (error) {
@@ -664,7 +681,7 @@ app.get('/api/campaign/:id/status', (req, res) => {
       });
     }
     
-    const stats = this.calculateCampaignStats(campaign);
+    const stats = calculateCampaignStats(campaign);
     
     res.json({
       success: true,
