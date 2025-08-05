@@ -1,0 +1,14 @@
+services:                           # Liste des services à déployer
+  - type: web                      # Service web (API/serveur)
+    name: blackquiet-sender        # Nom sur Render
+    env: node                      # Environnement Node.js
+    plan: free                     # Plan gratuit
+    rootDir: .                     # Racine du projet (IMPORTANT!)
+    buildCommand: yarn install     # Installation des dépendances
+    startCommand: node server.js   # Démarrage du serveur
+    envVars:                       # Variables d'environnement
+      - key: NODE_ENV              # Mode production
+        value: production
+      - key: PORT                  # Port du serveur
+        value: 10000
+    healthCheckPath: /api/health   # Endpoint de santé
