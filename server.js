@@ -83,7 +83,7 @@ app.post('/api/smtp/test', async (req, res) => {
     }
     
     // Créer le transporteur
-    const transporter = nodemailer.createTransporter({
+    const transporter = nodemailer.createTransport({
       host: server.host,
       port: parseInt(server.port),
       secure: server.secure || false,
@@ -359,7 +359,7 @@ async function processCampaign(campaignId) {
   
   try {
     // Créer le transporteur SMTP
-    transporter = nodemailer.createTransporter({
+    transporter = nodemailer.createTransport({
       host: campaign.smtpServer.host,
       port: parseInt(campaign.smtpServer.port),
       secure: campaign.smtpServer.secure || false,
