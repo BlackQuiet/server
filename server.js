@@ -1,11 +1,13 @@
-const express = require('express');
-const cors = require('cors');
-const nodemailer = require('nodemailer');
-const rateLimit = require('express-rate-limit');
-const helmet = require('helmet');
-const compression = require('compression');
-const winston = require('winston');
-require('dotenv').config();
+import express from 'express';
+import cors from 'cors';
+import nodemailer from 'nodemailer';
+import rateLimit from 'express-rate-limit';
+import helmet from 'helmet';
+import compression from 'compression';
+import winston from 'winston';
+import { config } from 'dotenv';
+
+config();
 
 const app = express();
 
@@ -23,8 +25,6 @@ const logger = winston.createLogger({
   ),
   defaultMeta: { service: 'blackquiet-emailsender' },
   transports: [
-    new winston.transports.File({ filename: 'logs/error.log', level: 'error' }),
-    new winston.transports.File({ filename: 'logs/combined.log' }),
     new winston.transports.Console({
       format: winston.format.combine(
         winston.format.colorize(),
@@ -155,7 +155,7 @@ class CampaignManager {
       return this.transporterPool.get(key);
     }
 
-    const transporter = nodemailer.createTransporter({
+    const transporter = nodemailer.createTransport({
       host: smtpConfig.host,
       port: parseInt(smtpConfig.port),
       secure: smtpConfig.port == 465,
@@ -485,6 +485,168 @@ class CampaignManager {
 // Instance globale du gestionnaire de campagnes
 const campaignManager = new CampaignManager();
 
+// ==================== FONCTIONS UTILITAIRES ====================
+
+function generateTestEmailHTML(server, responseTime) {
+  return `
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+      <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 10px;">
+        <h1 style="margin: 0; font-size: 24px;">✅ Test SMTP Pro Réussi !</h1>
+        <p style="margin: 10px 0 0 0;">Configuration validée avec succès</p>
+      </div>
+      
+      <div style="background: white; padding: 30px; border: 1px solid #e0e0e0; border-radius: 10px; margin-top: 20px;">
+        <h2 style="color: #333; margin-top: 0;">📊 Détails de la configuration</h2>
+        
+        <table style="width: 100%; border-collapse: collapse;">
+          <tr style="border-bottom: 1px solid #eee;">
+            <td style="padding: 10px 0; font-weight: bold; color: #666;">Serveur:</td>
+            <td style="padding: 10px 0;">${server.name}</td>
+          </tr>
+          <tr style="border-bottom: 1px solid #eee;">
+            <td style="padding: 10px 0; font-weight: bold; color: #666;">Host:</td>
+            <td style="padding: 10px 0;">${server.host}:${server.port}</td>
+          </tr>
+          <tr style="border-bottom: 1px solid #eee;">
+            <td style="padding: 10px 0; font-weight: bold; color: #666;">Sécurité:</td>
+            <td style="padding: 10px 0;">${server.port == 465 ? 'SSL/TLS' : 'STARTTLS'}</td>
+          </tr>
+          <tr style="border-bottom: 1px solid #eee;">
+            <td style="padding: 10px 0; font-weight: bold; color: #666;">Utilisateur:</td>
+            <td style="padding: 10px 0;">${server.username}</td>
+          </tr>
+          <tr style="border-bottom: 1px solid #eee;">
+            <td style="padding: 10px 0; font-weight: bold; color: #666;">Reply-To:</td>
+            <td style="padding: 10px 0;">${server.replyTo || server.username}</td>
+          </tr>
+          <tr>
+            <td style="padding: 10px 0; font-weight: bold; color: #666;">Temps de réponse:</td>
+            <td style="padding: 10px 0;">${responseTime}ms</td>
+          </tr>
+        </table>
+        
+        <div style="background: #f0f8ff; border-left: 4px solid #007cba; padding: 15px; margin: 20px 0; border-radius: 5px;">
+          <p style="margin: 0; color: #007cba;">
+            <strong>🎉 Excellent !</strong> Votre serveur SMTP est parfaitement configuré et optimisé pour l'envoi en masse.
+          </p>
+        </div>
+        
+        <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin-top: 20px;">
+          <h3 style="margin-top: 0; color: #333;">🚀 Fonctionnalités Pro activées:</h3>
+          <ul style="margin: 0; padding-left: 20px; color: #666;">
+            <li>Pool de connexions optimisé</li>
+            <li>Retry automatique des échecs</li>
+            <li>Personnalisation intelligente</li>
+            <li>Logging avancé</li>
+            <li>Rate limiting de sécurité</li>
+          </ul>
+        </div>
+        
+        <p style="color: #666; font-size: 14px; margin-top: 30px; text-align: center;">
+          Email généré par <strong>BlackQuiet EmailSender Pro v2.0</strong><br>
+          Test effectué le ${new Date().toLocaleString('fr-FR')}
+        </p>
+      </div>
+    </div>
+  `;
+}
+
+function handleSMTPError(error, server) {
+  let errorMessage = error.message;
+  let errorCode = 'UNKNOWN_ERROR';
+  
+  const errorMappings = {
+    'ECONNREFUSED': 'Connexion refusée - Vérifiez l\'host et le port',
+    'ENOTFOUND': 'Serveur introuvable - Vérifiez l\'adresse du serveur',
+    'EAUTH': 'Authentification échouée - Vérifiez vos identifiants',
+    'ETIMEDOUT': 'Timeout - Le serveur ne répond pas assez rapidement',
+    'ESOCKET': 'Erreur de socket - Problème de connexion réseau',
+    'ECONNRESET': 'Connexion réinitialisée - Serveur surchargé ou instable'
+  };
+  
+  if (errorMappings[error.code]) {
+    errorMessage = errorMappings[error.code];
+    errorCode = error.code;
+  } else if (error.responseCode === 535) {
+    errorMessage = 'Authentification échouée - Mot de passe incorrect ou 2FA requis';
+    errorCode = 'AUTH_FAILED';
+  }
+  
+  logger.warn('Échec test SMTP', { 
+    server: server?.name || 'unknown',
+    error: errorCode,
+    message: errorMessage 
+  });
+  
+  return {
+    success: false,
+    message: errorMessage,
+    responseTime: 0,
+    error: errorCode,
+    details: {
+      host: server?.host || 'unknown',
+      port: server?.port || 0,
+      secure: server?.port == 465,
+      auth: false
+    }
+  };
+}
+
+function validateCampaignData(data) {
+  const errors = [];
+  
+  if (!data.smtpServer) errors.push('Serveur SMTP requis');
+  if (!data.recipients || !Array.isArray(data.recipients) || data.recipients.length === 0) {
+    errors.push('Liste de destinataires requise');
+  }
+  if (!data.subject || data.subject.trim().length === 0) errors.push('Sujet requis');
+  if (!data.content || data.content.trim().length === 0) errors.push('Contenu requis');
+  
+  // Validation des emails
+  if (data.recipients) {
+    const invalidEmails = data.recipients.filter(email => 
+      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+    );
+    if (invalidEmails.length > 0) {
+      errors.push(`Emails invalides: ${invalidEmails.slice(0, 3).join(', ')}`);
+    }
+  }
+  
+  return {
+    valid: errors.length === 0,
+    errors
+  };
+}
+
+function calculateCampaignStats(campaign) {
+  const elapsedMinutes = (Date.now() - campaign.startTime) / 60000;
+  const speed = elapsedMinutes > 0 ? Math.round(campaign.sent / elapsedMinutes) : 0;
+  const remaining = campaign.recipients.length - campaign.sent;
+  const estimatedMinutes = speed > 0 ? Math.ceil(remaining / speed) : 0;
+  const successRate = campaign.sent > 0 ? (campaign.success / campaign.sent * 100) : 0;
+  
+  return {
+    sent: campaign.sent,
+    total: campaign.recipients.length,
+    success: campaign.success,
+    failed: campaign.failed,
+    remaining,
+    speed,
+    estimatedTime: estimatedMinutes > 0 ? `${estimatedMinutes} min restantes` : 'Calcul...',
+    successRate: Math.round(successRate * 100) / 100,
+    retryQueueSize: campaign.retryQueue?.length || 0
+  };
+}
+
+function estimateCampaignDuration(campaignData) {
+  const emailCount = campaignData.recipients.length;
+  const delaySeconds = campaignData.delayBetweenEmails || 5;
+  const totalSeconds = emailCount * delaySeconds;
+  const minutes = Math.ceil(totalSeconds / 60);
+  
+  return `~${minutes} minutes`;
+}
+
 // ==================== ROUTES AMÉLIORÉES ====================
 
 // Health check avancé
@@ -560,7 +722,7 @@ app.post('/api/smtp/test', async (req, res) => {
       });
     }
 
-    const transporter = nodemailer.createTransporter({
+    const transporter = nodemailer.createTransport({
       host: server.host,
       port: parseInt(server.port),
       secure: server.port == 465,
@@ -758,168 +920,6 @@ app.get('/api/stats', (req, res) => {
   }
 });
 
-// ==================== FONCTIONS UTILITAIRES ====================
-
-function generateTestEmailHTML(server, responseTime) {
-  return `
-    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-      <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 10px;">
-        <h1 style="margin: 0; font-size: 24px;">✅ Test SMTP Pro Réussi !</h1>
-        <p style="margin: 10px 0 0 0;">Configuration validée avec succès</p>
-      </div>
-      
-      <div style="background: white; padding: 30px; border: 1px solid #e0e0e0; border-radius: 10px; margin-top: 20px;">
-        <h2 style="color: #333; margin-top: 0;">📊 Détails de la configuration</h2>
-        
-        <table style="width: 100%; border-collapse: collapse;">
-          <tr style="border-bottom: 1px solid #eee;">
-            <td style="padding: 10px 0; font-weight: bold; color: #666;">Serveur:</td>
-            <td style="padding: 10px 0;">${server.name}</td>
-          </tr>
-          <tr style="border-bottom: 1px solid #eee;">
-            <td style="padding: 10px 0; font-weight: bold; color: #666;">Host:</td>
-            <td style="padding: 10px 0;">${server.host}:${server.port}</td>
-          </tr>
-          <tr style="border-bottom: 1px solid #eee;">
-            <td style="padding: 10px 0; font-weight: bold; color: #666;">Sécurité:</td>
-            <td style="padding: 10px 0;">${server.port == 465 ? 'SSL/TLS' : 'STARTTLS'}</td>
-          </tr>
-          <tr style="border-bottom: 1px solid #eee;">
-            <td style="padding: 10px 0; font-weight: bold; color: #666;">Utilisateur:</td>
-            <td style="padding: 10px 0;">${server.username}</td>
-          </tr>
-          <tr style="border-bottom: 1px solid #eee;">
-            <td style="padding: 10px 0; font-weight: bold; color: #666;">Reply-To:</td>
-            <td style="padding: 10px 0;">${server.replyTo || server.username}</td>
-          </tr>
-          <tr>
-            <td style="padding: 10px 0; font-weight: bold; color: #666;">Temps de réponse:</td>
-            <td style="padding: 10px 0;">${responseTime}ms</td>
-          </tr>
-        </table>
-        
-        <div style="background: #f0f8ff; border-left: 4px solid #007cba; padding: 15px; margin: 20px 0; border-radius: 5px;">
-          <p style="margin: 0; color: #007cba;">
-            <strong>🎉 Excellent !</strong> Votre serveur SMTP est parfaitement configuré et optimisé pour l'envoi en masse.
-          </p>
-        </div>
-        
-        <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin-top: 20px;">
-          <h3 style="margin-top: 0; color: #333;">🚀 Fonctionnalités Pro activées:</h3>
-          <ul style="margin: 0; padding-left: 20px; color: #666;">
-            <li>Pool de connexions optimisé</li>
-            <li>Retry automatique des échecs</li>
-            <li>Personnalisation intelligente</li>
-            <li>Logging avancé</li>
-            <li>Rate limiting de sécurité</li>
-          </ul>
-        </div>
-        
-        <p style="color: #666; font-size: 14px; margin-top: 30px; text-align: center;">
-          Email généré par <strong>BlackQuiet EmailSender Pro v2.0</strong><br>
-          Test effectué le ${new Date().toLocaleString('fr-FR')}
-        </p>
-      </div>
-    </div>
-  `;
-}
-
-function handleSMTPError(error, server) {
-  let errorMessage = error.message;
-  let errorCode = 'UNKNOWN_ERROR';
-  
-  const errorMappings = {
-    'ECONNREFUSED': 'Connexion refusée - Vérifiez l\'host et le port',
-    'ENOTFOUND': 'Serveur introuvable - Vérifiez l\'adresse du serveur',
-    'EAUTH': 'Authentification échouée - Vérifiez vos identifiants',
-    'ETIMEDOUT': 'Timeout - Le serveur ne répond pas assez rapidement',
-    'ESOCKET': 'Erreur de socket - Problème de connexion réseau',
-    'ECONNRESET': 'Connexion réinitialisée - Serveur surchargé ou instable'
-  };
-  
-  if (errorMappings[error.code]) {
-    errorMessage = errorMappings[error.code];
-    errorCode = error.code;
-  } else if (error.responseCode === 535) {
-    errorMessage = 'Authentification échouée - Mot de passe incorrect ou 2FA requis';
-    errorCode = 'AUTH_FAILED';
-  }
-  
-  logger.warn('Échec test SMTP', { 
-    server: server?.name || 'unknown',
-    error: errorCode,
-    message: errorMessage 
-  });
-  
-  return {
-    success: false,
-    message: errorMessage,
-    responseTime: 0,
-    error: errorCode,
-    details: {
-      host: server?.host || 'unknown',
-      port: server?.port || 0,
-      secure: server?.port == 465,
-      auth: false
-    }
-  };
-}
-
-function validateCampaignData(data) {
-  const errors = [];
-  
-  if (!data.smtpServer) errors.push('Serveur SMTP requis');
-  if (!data.recipients || !Array.isArray(data.recipients) || data.recipients.length === 0) {
-    errors.push('Liste de destinataires requise');
-  }
-  if (!data.subject || data.subject.trim().length === 0) errors.push('Sujet requis');
-  if (!data.content || data.content.trim().length === 0) errors.push('Contenu requis');
-  
-  // Validation des emails
-  if (data.recipients) {
-    const invalidEmails = data.recipients.filter(email => 
-      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
-    );
-    if (invalidEmails.length > 0) {
-      errors.push(`Emails invalides: ${invalidEmails.slice(0, 3).join(', ')}`);
-    }
-  }
-  
-  return {
-    valid: errors.length === 0,
-    errors
-  };
-}
-
-function calculateCampaignStats(campaign) {
-  const elapsedMinutes = (Date.now() - campaign.startTime) / 60000;
-  const speed = elapsedMinutes > 0 ? Math.round(campaign.sent / elapsedMinutes) : 0;
-  const remaining = campaign.recipients.length - campaign.sent;
-  const estimatedMinutes = speed > 0 ? Math.ceil(remaining / speed) : 0;
-  const successRate = campaign.sent > 0 ? (campaign.success / campaign.sent * 100) : 0;
-  
-  return {
-    sent: campaign.sent,
-    total: campaign.recipients.length,
-    success: campaign.success,
-    failed: campaign.failed,
-    remaining,
-    speed,
-    estimatedTime: estimatedMinutes > 0 ? `${estimatedMinutes} min restantes` : 'Calcul...',
-    successRate: Math.round(successRate * 100) / 100,
-    retryQueueSize: campaign.retryQueue?.length || 0
-  };
-}
-
-function estimateCampaignDuration(campaignData) {
-  const emailCount = campaignData.recipients.length;
-  const delaySeconds = campaignData.delayBetweenEmails || 5;
-  const totalSeconds = emailCount * delaySeconds;
-  const minutes = Math.ceil(totalSeconds / 60);
-  
-  return `~${minutes} minutes`;
-}
-
 // ==================== GESTION DES ERREURS ====================
 
 // 404 Handler
@@ -1028,4 +1028,4 @@ process.on('unhandledRejection', (reason, promise) => {
   logger.error('Promise rejetée non gérée:', { reason, promise });
 });
 
-module.exports = app;
+export default app;
