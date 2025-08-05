@@ -155,7 +155,7 @@ class CampaignManager {
       return this.transporterPool.get(key);
     }
 
-    const transporter = nodemailer.createTransport({
+    const transporter = nodemailer.createTransporter({
       host: smtpConfig.host,
       port: parseInt(smtpConfig.port),
       secure: smtpConfig.port == 465,
@@ -268,7 +268,6 @@ class CampaignManager {
             campaign.errors.push({
               email: recipient,
               error: result.reason.message,
-          html: generateTestEmailHTML(server, responseTime),
               smtp: campaign.smtpServer.name
             });
             campaign.logs.push(`❌ ${campaign.sent}/${campaign.recipients.length} → ${recipient}: ${result.reason.message}`);
@@ -561,7 +560,7 @@ app.post('/api/smtp/test', async (req, res) => {
       });
     }
 
-    const transporter = nodemailer.createTransport({
+    const transporter = nodemailer.createTransporter({
       host: server.host,
       port: parseInt(server.port),
       secure: server.port == 465,
@@ -607,7 +606,7 @@ app.post('/api/smtp/test', async (req, res) => {
         to: testEmail.trim(),
         replyTo: server.replyTo || server.username,
         subject: `✅ Test SMTP Pro - ${server.name} - ${new Date().toLocaleString('fr-FR')}`,
-        html: this.generateTestEmailHTML(server, responseTime),
+        html: generateTestEmailHTML(server, responseTime),
         headers: {
           'X-Mailer': 'BlackQuiet EmailSender Pro v2.0',
           'X-Test-Type': 'SMTP-Configuration-Test'
@@ -625,7 +624,7 @@ app.post('/api/smtp/test', async (req, res) => {
   } catch (error) {
     logger.error('Erreur test SMTP:', error);
     
-    const errorResponse = this.handleSMTPError(error, req.body.server);
+    const errorResponse = handleSMTPError(error, req.body.server);
     res.json(errorResponse);
   }
 });
@@ -637,7 +636,6 @@ app.post('/api/campaign/start', async (req, res) => {
     
     logger.info('Demande de création de campagne', {
       recipients: campaignData.recipients?.length || 0,
-      const errorResponse = handleSMTPError(error, req.body.server);
       smtp: campaignData.smtpServer?.name,
       ip: req.ip
     });
