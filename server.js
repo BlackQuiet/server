@@ -82,20 +82,30 @@ app.post('/api/smtp/test', async (req, res) => {
       });
     }
     
-    // Créer le transporteur
-    const transporter = nodemailer.createTransport({
+    // Configuration améliorée pour éviter les erreurs SOCKET
+    const transporter = nodemailer.createTransporter({
       host: server.host,
       port: parseInt(server.port),
-      secure: server.secure || false,
+      secure: server.port == 465, // true pour 465, false pour autres ports
       auth: {
         user: server.username,
         pass: server.password
       },
-      connectionTimeout: 10000,
-      greetingTimeout: 5000,
-      socketTimeout: 10000,
-      debug: false,
-      logger: false
+      // Timeouts plus longs pour éviter les erreurs SOCKET
+      connectionTimeout: 30000, // 30 secondes
+      greetingTimeout: 15000,   // 15 secondes
+      socketTimeout: 30000,     // 30 secondes
+      // Options de sécurité
+      requireTLS: server.port == 587, // Force STARTTLS pour port 587
+      tls: {
+        rejectUnauthorized: false, // Accepter les certificats auto-signés
+        ciphers: 'SSLv3'
+      },
+      // Pool de connexions désactivé pour les tests
+      pool: false,
+      // Debug pour diagnostiquer
+      debug: true,
+      logger: console
     });
 
     const startTime = Date.now();
@@ -207,6 +217,15 @@ app.post('/api/smtp/test', async (req, res) => {
     } else if (error.code === 'ESOCKET') {
       errorMessage = 'Erreur de socket - Problème de connexion réseau';
       errorCode = 'ESOCKET';
+    } else if (error.code === 'ESOCKET' || error.message.includes('socket')) {
+      errorMessage = 'Erreur de socket - Vérifiez votre connexion internet et les paramètres du serveur SMTP';
+      errorCode = 'ESOCKET';
+    } else if (error.code === 'ECONNRESET') {
+      errorMessage = 'Connexion réinitialisée par le serveur - Essayez avec des timeouts plus longs';
+      errorCode = 'ECONNRESET';
+    } else if (error.message.includes('self signed certificate')) {
+      errorMessage = 'Certificat SSL auto-signé - Configuration TLS ajustée automatiquement';
+      errorCode = 'CERT_ERROR';
     }
     
     res.json({
