@@ -146,6 +146,8 @@ class CampaignManager {
     this.transporterPool = new Map();
     this.maxConcurrentCampaigns = 3;
     this.activeCampaigns = 0;
+    this.smtpRotation = new Map(); // Rotation par campagne
+    this.emailCounters = new Map(); // Compteurs d'emails par serveur
   }
 
   async createTransporter(smtpConfig) {
@@ -155,7 +157,7 @@ class CampaignManager {
       return this.transporterPool.get(key);
     }
 
-    const transporter = nodemailer.createTransport({
+    const transporter = nodemailer.createTransporter({
       host: smtpConfig.host,
       port: parseInt(smtpConfig.port),
       secure: smtpConfig.port == 465,
@@ -163,9 +165,9 @@ class CampaignManager {
         user: smtpConfig.username,
         pass: smtpConfig.password
       },
-      pool: true,
-      maxConnections: 5,
-      maxMessages: 100,
+      pool: false, // Désactiver le pool pour contrôler manuellement
+      maxConnections: 1,
+      maxMessages: 1,
       connectionTimeout: 30000,
       greetingTimeout: 15000,
       socketTimeout: 30000,
@@ -233,50 +235,106 @@ class CampaignManager {
     const campaign = this.campaigns.get(campaignId);
     if (!campaign) return;
 
-    let transporter = null;
+    // Initialiser la rotation SMTP pour cette campagne avec validation
+    let availableServers = [];
+    
+    if (campaign.useSmtpRotation && campaign.smtpServers && campaign.smtpServers.length > 1) {
+      availableServers = campaign.smtpServers;
+      console.log(`🔄 Rotation SMTP activée avec ${availableServers.length} serveurs`);
+    } else {
+      availableServers = [campaign.smtpServer];
+      console.log(`📡 Serveur SMTP unique utilisé: ${campaign.smtpServer?.name}`);
+    }
+    
+    const smtpRotation = {
+      servers: availableServers.map(server => ({
+        ...server,
+        isActive: true,
+        failureCount: 0,
+        sentCount: 0,
+        lastUsed: null
+      })),
+      currentIndex: 0
+    };
+    this.smtpRotation.set(campaignId, smtpRotation);
 
     try {
-      transporter = await this.createTransporter(campaign.smtpServer);
-      
       campaign.logs.push(`🚀 Démarrage - ${campaign.recipients.length} emails à envoyer`);
-      campaign.logs.push(`📡 SMTP: ${campaign.smtpServer.name} (${campaign.smtpServer.host}:${campaign.smtpServer.port})`);
+      campaign.logs.push(`📡 ${availableServers.length} serveur(s) SMTP disponible(s)`);
+      
+      if (campaign.useCustomSubjects && campaign.customSubjects?.length > 0) {
+        campaign.logs.push(`📝 ${campaign.customSubjects.length} sujet(s) personnalisé(s) activé(s)`);
+      }
+      
+      if (campaign.useCustomSenders && campaign.customSenders?.length > 0) {
+        campaign.logs.push(`👤 ${campaign.customSenders.length} expéditeur(s) personnalisé(s) activé(s)`);
+      }
+      
+      if (campaign.useSmtpRotation) {
+        campaign.logs.push(`🔄 Rotation SMTP activée (fréquence: ${campaign.rotationFrequency || 1})`);
+      }
 
-      // Traitement par batch pour optimiser les performances
-      const batchSize = 10;
-      const batches = this.chunkArray(campaign.recipients, batchSize);
-
-      for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
+      // Envoi séquentiel UN PAR UN (méthode pro anti-spam)
+      for (let i = 0; i < campaign.recipients.length; i++) {
         if (campaign.status !== 'running') break;
 
-        const batch = batches[batchIndex];
-        const batchPromises = batch.map(recipient => 
-          this.sendEmail(campaign, transporter, recipient)
-        );
-
-        // Traitement parallèle du batch
-        const results = await Promise.allSettled(batchPromises);
+        const recipient = campaign.recipients[i];
+        campaign.currentEmail = recipient;
         
-        results.forEach((result, index) => {
-          const recipient = batch[index];
+        // Obtenir le prochain serveur SMTP disponible
+        const smtpServer = this.getNextAvailableSMTP(campaignId);
+        if (!smtpServer) {
+          campaign.logs.push(`❌ Aucun serveur SMTP disponible - Arrêt de la campagne`);
+          campaign.status = 'error';
+          break;
+        }
+
+        campaign.logs.push(`📧 ${i + 1}/${campaign.recipients.length} → ${recipient} via ${smtpServer.name}`);
+        
+        try {
+          // Créer un transporter pour ce serveur spécifique
+          const transporter = await this.createTransporter(smtpServer);
+          
+          // Envoyer l'email
+          await this.sendEmail(campaign, transporter, recipient, smtpServer);
+          
           campaign.sent++;
+          campaign.success++;
+          
+          // Marquer le serveur comme utilisé avec succès
+          this.markSMTPSuccess(campaignId, smtpServer.id);
+          
+          campaign.logs.push(`✅ ${campaign.sent}/${campaign.recipients.length} → ${recipient} envoyé avec succès`);
+          
+        } catch (error) {
+          campaign.sent++;
+          campaign.failed++;
+          
+          // Marquer le serveur comme ayant échoué
+          this.markSMTPFailure(campaignId, smtpServer.id, error.message);
+          
+          campaign.errors.push({
+            email: recipient,
+            error: error.message,
+            smtp: smtpServer.name,
+            timestamp: new Date().toISOString()
+          });
+          
+          campaign.logs.push(`❌ ${campaign.sent}/${campaign.recipients.length} → ${recipient}: ${error.message}`);
+        }
 
-          if (result.status === 'fulfilled') {
-            campaign.success++;
-            campaign.logs.push(`✅ ${campaign.sent}/${campaign.recipients.length} → ${recipient}`);
-          } else {
-            campaign.failed++;
-            campaign.errors.push({
-              email: recipient,
-              error: result.reason.message,
-              smtp: campaign.smtpServer.name
-            });
-            campaign.logs.push(`❌ ${campaign.sent}/${campaign.recipients.length} → ${recipient}: ${result.reason.message}`);
-          }
-        });
+        // Calculer les statistiques en temps réel
+        const elapsedMinutes = (Date.now() - campaign.startTime) / 60000;
+        campaign.speed = elapsedMinutes > 0 ? Math.round(campaign.sent / elapsedMinutes) : 0;
+        campaign.remaining = campaign.recipients.length - campaign.sent;
+        
+        const estimatedMinutes = campaign.speed > 0 ? Math.ceil(campaign.remaining / campaign.speed) : 0;
+        campaign.estimatedTime = estimatedMinutes > 0 ? `${estimatedMinutes} min restantes` : 'Calcul...';
 
-        // Délai entre les batches
-        if (batchIndex < batches.length - 1 && campaign.status === 'running') {
+        // Délai anti-spam entre chaque email (CRUCIAL)
+        if (i < campaign.recipients.length - 1 && campaign.status === 'running') {
           const delay = (campaign.delayBetweenEmails || 5) * 1000;
+          campaign.logs.push(`⏳ Délai anti-spam: ${delay/1000}s`);
           await new Promise(resolve => setTimeout(resolve, delay));
         }
       }
@@ -348,6 +406,16 @@ class CampaignManager {
     const unsubscribeLink = `https://example.com/unsubscribe?email=${encodeURIComponent(recipient)}`;
     
     let subject = campaign.subject;
+    
+    // Utiliser un sujet personnalisé si activé
+    if (campaign.useCustomSubjects && campaign.customSubjects && campaign.customSubjects.length > 0) {
+      const randomSubject = campaign.customSubjects[Math.floor(Math.random() * campaign.customSubjects.length)];
+      subject = randomSubject;
+      console.log(`📝 Sujet personnalisé utilisé: ${subject}`);
+    } else {
+      console.log(`📝 Sujet original utilisé: ${subject}`);
+    }
+    
     let content = campaign.content;
     
     // Variables de base
@@ -358,7 +426,8 @@ class CampaignManager {
       '{{unsubscribe}}': unsubscribeLink,
       '{{date}}': new Date().toLocaleDateString('fr-FR'),
       '{{time}}': new Date().toLocaleTimeString('fr-FR'),
-      '{{campaign_id}}': campaign.id
+      '{{campaign_id}}': campaign.id,
+      '{{ref}}': 'REF' + Math.floor(Math.random() * 100000)
     };
 
     // Appliquer les variables
@@ -367,57 +436,22 @@ class CampaignManager {
       content = content.replace(new RegExp(variable, 'g'), value);
     });
 
-    // Génération intelligente de variations
-    if (campaign.useRandomSubject) {
-      subject = this.generateSubjectVariation(subject);
-    }
 
-    const fromName = campaign.useRandomFromName ? 
-      this.generateContextualFromName(subject) : 
-      campaign.smtpServer.username.split('@')[0];
+    let fromName;
+    
+    // Utiliser un expéditeur personnalisé si activé
+    if (campaign.useCustomSenders && campaign.customSenders && campaign.customSenders.length > 0) {
+      const randomSender = campaign.customSenders[Math.floor(Math.random() * campaign.customSenders.length)];
+      fromName = randomSender;
+      console.log(`👤 Expéditeur personnalisé utilisé: ${fromName}`);
+    } else {
+      fromName = campaign.smtpServer?.username?.split('@')[0] || 'Expéditeur';
+      console.log(`👤 Expéditeur par défaut utilisé: ${fromName}`);
+    }
 
     return { subject, content, fromName };
   }
 
-  generateSubjectVariation(baseSubject) {
-    const variations = [
-      `Re: ${baseSubject}`,
-      `${baseSubject} - Suivi`,
-      `Concernant: ${baseSubject}`,
-      `${baseSubject} - Détails`,
-      `À propos de: ${baseSubject}`,
-      `${baseSubject} - Information complémentaire`,
-      `FW: ${baseSubject}`,
-      `${baseSubject} - Mise à jour`
-    ];
-    return variations[Math.floor(Math.random() * variations.length)];
-  }
-
-  generateContextualFromName(subject) {
-    const businessNames = [
-      "Marc Dubois", "Sophie Laurent", "Pierre Martin", "Claire Durand",
-      "Antoine Moreau", "Camille Bernard", "Julien Leroy", "Émilie Petit"
-    ];
-    
-    const technicalNames = [
-      "Thomas Rousseau", "Marine Girard", "Nicolas Fournier", "Aurélie Michel"
-    ];
-    
-    const supportNames = [
-      "David Fontaine", "Lucie Robin", "Mathieu Chevalier", "Nathalie Gauthier"
-    ];
-
-    const lowerSubject = subject.toLowerCase();
-    let namePool = businessNames;
-
-    if (lowerSubject.includes('technique') || lowerSubject.includes('support')) {
-      namePool = technicalNames;
-    } else if (lowerSubject.includes('aide') || lowerSubject.includes('assistance')) {
-      namePool = supportNames;
-    }
-
-    return namePool[Math.floor(Math.random() * namePool.length)];
-  }
 
   async processRetryQueue(campaign, transporter) {
     const retryBatch = campaign.retryQueue.splice(0, 5); // Retry par petits batches
@@ -467,6 +501,97 @@ class CampaignManager {
     return false;
   }
 
+  // Méthode spécifique pour obtenir le prochain serveur SMTP dans une campagne
+  getNextAvailableSMTP(campaignId) {
+    const rotation = this.smtpRotation.get(campaignId);
+    if (!rotation) return null;
+
+    // Filtrer les serveurs actifs
+    const activeServers = rotation.servers.filter(server => {
+      // Vérifier si le serveur est actif
+      if (!server.isActive) {
+        // Vérifier si le cooldown est terminé
+        if (server.lastFailure) {
+          const cooldownEnd = new Date(server.lastFailure.getTime() + 30 * 60000); // 30 min
+          if (new Date() > cooldownEnd) {
+            server.isActive = true;
+            server.failureCount = 0;
+            logger.info(`🔄 Serveur ${server.name} réactivé après cooldown`);
+          } else {
+            return false;
+          }
+        }
+      }
+
+      // Vérifier la limite quotidienne
+      if (server.sentCount >= (server.dailyLimit || 500)) {
+        return false;
+      }
+
+      return true;
+    });
+
+    if (activeServers.length === 0) {
+      console.warn(`❌ Aucun serveur SMTP actif disponible pour la campagne ${campaignId}`);
+      return null;
+    }
+
+    // Rotation intelligente : sélectionner le serveur optimal
+    const selectedServer = activeServers.sort((a, b) => {
+      // Prioriser par : moins d'échecs, moins d'envois, meilleur temps de réponse
+      if (a.failureCount !== b.failureCount) {
+        return a.failureCount - b.failureCount;
+      }
+      if (a.sentCount !== b.sentCount) {
+        return a.sentCount - b.sentCount;
+      }
+      return (a.responseTime || 0) - (b.responseTime || 0);
+    })[0];
+    
+    console.log(`🎯 Serveur SMTP sélectionné: ${selectedServer.name} (échecs: ${selectedServer.failureCount}, envoyés: ${selectedServer.sentCount})`);
+
+    return selectedServer;
+  }
+
+  // Marquer un serveur comme ayant échoué dans une campagne
+  markSMTPFailure(campaignId, serverId, error, campaign = null) {
+    const rotation = this.smtpRotation.get(campaignId);
+    if (!rotation) return;
+
+    const server = rotation.servers.find(s => s.id === serverId);
+    if (!server) return;
+
+    server.failureCount++;
+    server.lastFailure = new Date();
+    
+    const maxFailures = campaign?.maxFailuresPerServer || 3;
+
+    // Désactiver le serveur si trop d'échecs
+    if (server.failureCount >= maxFailures) {
+      server.isActive = false;
+      logger.warn(`⚠️ Serveur SMTP ${server.name} désactivé après ${server.failureCount} échecs (limite: ${maxFailures})`);
+    }
+
+    logger.error(`❌ Échec SMTP ${server.name}: ${error}`);
+  }
+
+  // Marquer un envoi réussi dans une campagne
+  markSMTPSuccess(campaignId, serverId) {
+    const rotation = this.smtpRotation.get(campaignId);
+    if (!rotation) return;
+
+    const server = rotation.servers.find(s => s.id === serverId);
+    if (!server) return;
+
+    server.sentCount++;
+    server.lastUsed = new Date();
+    
+    // Réduire le compteur d'échecs en cas de succès
+    if (server.failureCount > 0) {
+      server.failureCount = Math.max(0, server.failureCount - 1);
+    }
+  }
+
   // Nettoyage automatique des anciennes campagnes
   cleanup() {
     const now = Date.now();
@@ -481,6 +606,27 @@ class CampaignManager {
     }
   }
 }
+
+// Méthode pour obtenir le statut de rotation SMTP
+CampaignManager.prototype.getSMTPRotationStatus = function(campaignId) {
+  const rotation = this.smtpRotation.get(campaignId);
+  if (!rotation) return null;
+  
+  return {
+    totalServers: rotation.servers.length,
+    activeServers: rotation.servers.filter(s => s.isActive).length,
+    inactiveServers: rotation.servers.filter(s => !s.isActive).length,
+    servers: rotation.servers.map(server => ({
+      id: server.id,
+      name: server.name,
+      isActive: server.isActive,
+      sentCount: server.sentCount,
+      failureCount: server.failureCount,
+      lastUsed: server.lastUsed,
+      lastFailure: server.lastFailure
+    }))
+  };
+};
 
 // Instance globale du gestionnaire de campagnes
 const campaignManager = new CampaignManager();
@@ -722,7 +868,7 @@ app.post('/api/smtp/test', async (req, res) => {
       });
     }
 
-    const transporter = nodemailer.createTransport({
+    const transporter = nodemailer.createTransporter({
       host: server.host,
       port: parseInt(server.port),
       secure: server.port == 465,
@@ -857,6 +1003,31 @@ app.get('/api/campaign/:id/status', (req, res) => {
     });
   } catch (error) {
     logger.error('Erreur statut campagne:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Erreur interne du serveur'
+    });
+  }
+});
+
+// Nouvelle route: Statut de la rotation SMTP
+app.get('/api/campaign/:id/smtp-rotation', (req, res) => {
+  try {
+    const rotationStatus = campaignManager.getSMTPRotationStatus(req.params.id);
+    
+    if (!rotationStatus) {
+      return res.status(404).json({
+        success: false,
+        message: 'Rotation SMTP non trouvée'
+      });
+    }
+    
+    res.json({
+      success: true,
+      rotation: rotationStatus
+    });
+  } catch (error) {
+    logger.error('Erreur statut rotation SMTP:', error);
     res.status(500).json({
       success: false,
       message: error.message || 'Erreur interne du serveur'
