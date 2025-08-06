@@ -157,7 +157,7 @@ class CampaignManager {
       return this.transporterPool.get(key);
     }
 
-    const transporter = nodemailer.createTransporter({
+    const transporter = nodemailer.createTransport({
       host: smtpConfig.host,
       port: parseInt(smtpConfig.port),
       secure: smtpConfig.port == 465,
@@ -868,7 +868,7 @@ app.post('/api/smtp/test', async (req, res) => {
       });
     }
 
-    const transporter = nodemailer.createTransporter({
+    const transporter = nodemailer.createTransport({
       host: server.host,
       port: parseInt(server.port),
       secure: server.port == 465,
