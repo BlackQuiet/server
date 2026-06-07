@@ -1,14 +1,19 @@
-services:                           # Liste des services à déployer
-  - type: web                      # Service web (API/serveur)
-    name: blackquiet-sender        # Nom sur Render
-    env: node                      # Environnement Node.js
-    plan: free                     # Plan gratuit
-    rootDir: .                     # Racine du projet (IMPORTANT!)
-    buildCommand: yarn install     # Installation des dépendances
-    startCommand: node server.js   # Démarrage du serveur
-    envVars:                       # Variables d'environnement
-      - key: NODE_ENV              # Mode production
-        value: production
-      - key: PORT                  # Port du serveur
-        value: 10000
-    healthCheckPath: /api/health   # Endpoint de santé
+services:
+  - type: web
+    name: blackquiet-backend
+    env: node
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: PROXY_HOST
+        value: niceproxy.io
+      - key: PROXY_PORT
+        value: 17521
+      - key: PROXY_USER
+        value: black_rIxx-country-CA-isp-as11260_eastlink-ssid-RRZby1eS6k
+      - key: PROXY_PASS
+        value: Kouame07
+      - key: SMTP_HOST
+        value: smtp.eastlink.ca
+      - key: SMTP_PORT
+        value: 25
